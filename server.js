@@ -9,9 +9,6 @@ const db      = require('./database');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const BOT_PORT = process.env.BOT_PORT || 3001;
-const BOT_URL  = `http://localhost:${BOT_PORT}`;
-
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -233,37 +230,28 @@ app.post('/api/gas/sync-products', mockAuth, async (req, res) => {
     }
 });
 
-// =================================================================
-// TAMBAHKAN INI ke server.js
-// Letakkan SEBELUM baris: db.initializeDatabase();
-// =================================================================
-
-// Proxy: status bot
-app.get('/api/bot-status', async (req, res) => {
-    try {
-        const r = await axios.get(`${BOT_URL}/status`, { timeout: 2000 });
-        res.json(r.data);
-    } catch {
-        res.json({ success: true, status: 'disconnected', qr: null, phone: null });
+// --- HELPER TO UPDATE .ENV ---
+function updateEnvKey(provider, apiKey) {
+    const envPath = path.resolve(__dirname, '.env');
+    if (!fs.existsSync(envPath)) return;
+    let content = fs.readFileSync(envPath, 'utf8');
+    let keyName = '';
+    switch (provider) {
+        case 'groq': keyName = 'GROQ_API_KEY'; break;
+        case 'gemini': keyName = 'GEMINI_API_KEY'; break;
+        case 'openai': keyName = 'OPENAI_API_KEY'; break;
+        case 'openrouter': keyName = 'OPENROUTER_API_KEY'; break;
     }
-});
-
-// Proxy: minta pairing code
-app.post('/api/bot-connect', async (req, res) => {
-    try {
-        const r = await axios.post(`${BOT_URL}/connect`, req.body, { timeout: 10000 });
-        res.json(r.data);
-    } catch (err) {
-        res.json({ success: false, error: 'Bot tidak merespons. Jalankan: node index.js' });
+    if (!keyName) return;
+    const regex = new RegExp(`^${keyName}=.*`, 'm');
+    if (regex.test(content)) {
+        content = content.replace(regex, `${keyName}=${apiKey}`);
+    } else {
+        content += `\n${keyName}=${apiKey}`;
     }
-});
-
-// =================================================================
-// Pastikan 'axios' sudah di-require di atas file server.js
-// (sudah ada di baris: const axios = require('axios'); di dalam /api/models)
-// Pindahkan saja ke bagian atas bersama require lainnya.
-// =================================================================
-
+    fs.writeFileSync(envPath, content, 'utf8');
+    process.env[keyName] = apiKey;
+}
 
 // Initialize DB and start server
 db.initializeDatabase();

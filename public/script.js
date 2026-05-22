@@ -278,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- LOAD PRODUCTS ---
-    async function loadProducts() {
+    window.loadProducts = async function() {
         const tbody = document.getElementById('product-list');
         tbody.innerHTML = '<tr><td colspan="5" class="text-center">Memuat data...</td></tr>';
         

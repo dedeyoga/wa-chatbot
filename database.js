@@ -157,6 +157,7 @@ const updateProduct = (id, userId, product) =>
             nama_produk: product.nama_produk,
             harga:       parseInt(product.harga) || 0,
             keterangan:  product.keterangan || ''
+            // wa_product_id TIDAK di-reset saat edit manual
         }},
         {}
     );
