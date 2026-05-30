@@ -19,6 +19,7 @@ const DB = {
     products:   new Datastore({ filename: path.join(DATA_DIR, 'products.db'),   autoload: true }),
     alerts:     new Datastore({ filename: path.join(DATA_DIR, 'alerts.db'),     autoload: true }),
     faqs:       new Datastore({ filename: path.join(DATA_DIR, 'faqs.db'),       autoload: true }),
+    quick_replies: new Datastore({ filename: path.join(DATA_DIR, 'quick_replies.db'), autoload: true }),
 };
 
 // Helper promise wrapper
@@ -206,6 +207,31 @@ const updateFaq = (id, userId, faq) =>
 const deleteFaq = (id, userId) =>
     run(DB.faqs, 'remove', { _id: id, user_id: userId }, {});
 
+// === QUICK REPLIES (Balasan Cepat Lokal) ===
+const getQuickReplies = async (userId) => {
+    const rows = await run(DB.quick_replies, 'find', { user_id: userId });
+    return rows.map(q => ({ ...q, id: q._id }));
+};
+
+const addQuickReply = async (userId, qr) => {
+    const doc = await run(DB.quick_replies, 'insert', { 
+        user_id: userId, 
+        keywords: qr.keywords, 
+        response: qr.response 
+    });
+    return { id: doc._id };
+};
+
+const updateQuickReply = (id, userId, qr) =>
+    run(DB.quick_replies, 'update',
+        { _id: id, user_id: userId },
+        { $set: { keywords: qr.keywords, response: qr.response } },
+        {}
+    );
+
+const deleteQuickReply = (id, userId) =>
+    run(DB.quick_replies, 'remove', { _id: id, user_id: userId }, {});
+
 // === SYSTEM ALERTS ===
 const addSystemAlert = async (userId, message) => {
     const doc = await run(DB.alerts, 'insert', {
@@ -248,5 +274,6 @@ module.exports = {
     getProducts, addProduct, updateProduct, deleteProduct, upsertProductFromGAS,
     updateWAProductId,
     getFaqs, addFaq, updateFaq, deleteFaq,
+    getQuickReplies, addQuickReply, updateQuickReply, deleteQuickReply,
     addSystemAlert, getSystemAlerts, markAlertsAsRead,
 };

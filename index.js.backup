@@ -39,8 +39,6 @@ const TECH = {
     telegramBotToken:   process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId:     process.env.TELEGRAM_CHAT_ID,
     n8nWebhookUrl:      process.env.N8N_WEBHOOK_URL,
-    botpressBotId:      process.env.BOTPRESS_BOT_ID,
-    botpressToken:      process.env.BOTPRESS_ACCESS_TOKEN,
 };
 
 const logger = pino({ transport: { target: 'pino-pretty' } });
@@ -68,45 +66,6 @@ const isWABiz = (sock) => {
         return typeof sock.getCatalog === 'function';
     } catch { return false; }
 };
-
-// =================================================================
-// QUICK REPLIES HANDLER (Balasan Cepat)
-// =================================================================
-const quickRepliesCache = { data: null, timestamp: 0 };
-const QUICK_REPLIES_CACHE_TTL = 5 * 60 * 1000; // 5 menit
-
-async function getWAQuickReplies(sock) {
-    if (!isWABiz(sock)) return null;
-    const now = Date.now();
-    if (quickRepliesCache.data && (now - quickRepliesCache.timestamp) < QUICK_REPLIES_CACHE_TTL) {
-        return quickRepliesCache.data;
-    }
-    try {
-        const attrs = await sock.getBusinessProfile(sock.user?.id);
-        if (attrs?.quickReplies) {
-            quickRepliesCache.data = attrs.quickReplies;
-            quickRepliesCache.timestamp = now;
-            return attrs.quickReplies;
-        }
-    } catch (e) {
-        logger.info('[QuickReplies] Gagal ambil dari WA Business:', e.message);
-    }
-    return null;
-}
-
-function findQuickReplyMatch(text, quickReplies) {
-    if (!quickReplies?.length) return null;
-    const lowerText = text.toLowerCase();
-    for (const qr of quickReplies) {
-        const keywords = qr.keywords || [];
-        for (const kw of keywords) {
-            if (lowerText.includes(kw.toLowerCase())) {
-                return qr.response;
-            }
-        }
-    }
-    return null;
-}
 
 // =================================================================
 // DYNAMIC SYSTEM PROMPT
@@ -222,38 +181,6 @@ async function sendTelegramNotification(text, imageBuffer = null) {
         }
     } catch (e) {
         logger.error('[Telegram] Gagal kirim:', e.message);
-    }
-}
-
-async function forwardToBotpress(message, sender, messageType = 'text') {
-    if (!TECH.botpressBotId || !TECH.botpressToken) return null;
-    try {
-        const response = await axios.post(
-            `https://api.botpress.cloud/v3/${TECH.botpressBotId}/conversations`,
-            {
-                messages: [{
-                    type: messageType,
-                    content: message,
-                    role: 'user'
-                }]
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${TECH.botpressToken}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-        const messages = response.data.messages || [];
-        if (messages.length > 0) {
-            const reply = messages[0].content?.text || messages[0].content || 'Botpress tidak merespons';
-            logger.info('[Botpress] Respons diterima');
-            return reply;
-        }
-        return null;
-    } catch (e) {
-        logger.error('[Botpress] Gagal forward:', e.message);
-        return null;
     }
 }
 
@@ -429,24 +356,6 @@ const handleMessagesUpsert = (sock) => async ({ messages }) => {
         return;
     }
 
-    // ===== AUTO-REPLY HARGA =====
-    if (/harga|price|daftar harga|list harga|berapa harga|harganya/i.test(command)) {
-        const products = await db.getProducts('admin');
-        if (products.length) {
-            const catMsg = products.map(p => 
-                `🛍️ *${p.nama_produk}*\n   💰 Rp${Number(p.harga).toLocaleString('id-ID')} ${p.keterangan ? ' – ' + p.keterangan : ''}`
-            ).join('\n\n');
-            await sendMessageWTyping(sock, sender, { text: `*Daftar Harga Produk*\n\n${catMsg}` }, { quoted: msg });
-            await db.addMessageToHistory(sender, 'user', text);
-            await db.addMessageToHistory(sender, 'assistant', catMsg);
-        } else {
-            await sendMessageWTyping(sock, sender, { text: '📭 Katalog masih kosong. Admin sedang menyiapkan produk.' }, { quoted: msg });
-            await db.addMessageToHistory(sender, 'user', text);
-            await db.addMessageToHistory(sender, 'assistant', '📭 Katalog masih kosong. Admin sedang menyiapkan produk.');
-        }
-        return;
-    }
-
     const faqs       = await db.getFaqs(userId);
     const matchedFaq = faqs.find(f => f.command.toLowerCase() === command);
     if (matchedFaq) {
@@ -456,72 +365,8 @@ const handleMessagesUpsert = (sock) => async ({ messages }) => {
         return;
     }
 
-    // ===== QUICK REPLIES LOKAL (dari database) =====
-    // Cek balasan cepat dari database sebelum AI untuk menghemat token
-    try {
-        const localQuickReplies = await db.getQuickReplies(userId);
-        if (localQuickReplies?.length) {
-            const lowerText = text.toLowerCase();
-            for (const qr of localQuickReplies) {
-                const keywords = qr.keywords || [];
-                for (const kw of keywords) {
-                    if (lowerText.includes(kw.toLowerCase())) {
-                        await sendMessageWTyping(sock, sender, { text: qr.response }, { quoted: msg });
-                        await db.addMessageToHistory(sender, 'user', text);
-                        await db.addMessageToHistory(sender, 'assistant', qr.response);
-                        return;
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        logger.info('[QuickReplies Lokal] Error:', e.message);
-    }
-
-    // ===== CHECK PRODUK/HARGA =====
-    // Jawab otomatis jika mencari harga tanpa AI
-    if (/harga|price|daftar harga|list harga|berapa harga|harganya/i.test(command)) {
-        const products = await db.getProducts('admin');
-        if (products.length) {
-            const catMsg = products.map(p =>
-                `🛍️ *${p.nama_produk}*\n   💰 Rp${Number(p.harga).toLocaleString('id-ID')} ${p.keterangan ? ' – ' + p.keterangan : ''}`
-            ).join('\n\n');
-            await sendMessageWTyping(sock, sender, { text: `*Daftar Harga Produk*\n\n${catMsg}` }, { quoted: msg });
-            await db.addMessageToHistory(sender, 'user', text);
-            await db.addMessageToHistory(sender, 'assistant', catMsg);
-            return;
-        }
-    }
-
-    // ===== QUICK REPLIES (Balasan Cepat dari WA Business) =====
-    try {
-        const waQuickReplies = await getWAQuickReplies(sock);
-        if (waQuickReplies?.length) {
-            const qrResponse = findQuickReplyMatch(text, waQuickReplies);
-            if (qrResponse) {
-                await sendMessageWTyping(sock, sender, { text: qrResponse }, { quoted: msg });
-                await db.addMessageToHistory(sender, 'user', text);
-                await db.addMessageToHistory(sender, 'assistant', qrResponse);
-                return;
-            }
-        }
-    } catch (e) {
-        logger.info('[QuickReplies WA] Error:', e.message);
-    }
-
     const userHistory = await db.getHistoryForJid(sender);
     await db.addMessageToHistory(sender, 'user', text);
-
-    // Coba Botpress terlebih dahulu jika konfigurasi ada
-    if (TECH.botpressBotId && TECH.botpressToken) {
-        const botpressReply = await forwardToBotpress(text, sender);
-        if (botpressReply) {
-            await sendMessageWTyping(sock, sender, { text: botpressReply }, { quoted: msg });
-            await db.addMessageToHistory(sender, 'assistant', botpressReply);
-            return;
-        }
-    }
-
     const reply = await getAIReply(text, userHistory, customerName, userId);
     if (reply) {
         await sendMessageWTyping(sock, sender, { text: reply }, { quoted: msg });
@@ -752,54 +597,8 @@ app.put('/api/faqs/:id', mockAuth, async (req, res) => {
     catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 app.delete('/api/faqs/:id', mockAuth, async (req, res) => {
-    try { await db.deleteFaq(req.params.id, req.user.id, req.body); res.json({ success: true, message: 'FAQ dihapus' }); }
+    try { await db.deleteFaq(req.params.id, req.user.id); res.json({ success: true, message: 'FAQ dihapus' }); }
     catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-// Quick Replies Lokal (Balasan Cepat dari Database)
-app.get('/api/quick-replies/local', mockAuth, async (req, res) => {
-    try { res.json({ success: true, quickReplies: await db.getQuickReplies(req.user.id) }); }
-    catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-app.post('/api/quick-replies/local', mockAuth, async (req, res) => {
-    try { const r = await db.addQuickReply(req.user.id, req.body); res.json({ success: true, id: r.id, message: 'Quick reply ditambahkan' }); }
-    catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-app.put('/api/quick-replies/local/:id', mockAuth, async (req, res) => {
-    try { await db.updateQuickReply(req.params.id, req.user.id, req.body); res.json({ success: true, message: 'Quick reply diperbarui' }); }
-    catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-app.delete('/api/quick-replies/local/:id', mockAuth, async (req, res) => {
-    try { await db.deleteQuickReply(req.params.id, req.user.id); res.json({ success: true, message: 'Quick reply dihapus' }); }
-    catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-// Quick Replies (Balasan Cepat) - dari WA Business
-app.get('/api/quick-replies', mockAuth, async (req, res) => {
-    try {
-        if (!currentSock || !isWABiz(currentSock)) {
-            return res.json({ success: false, error: 'Fitur ini hanya untuk WhatsApp Business' });
-        }
-        const quickReplies = await getWAQuickReplies(currentSock);
-        res.json({ success: true, quickReplies: quickReplies || [] });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.post('/api/quick-replies/refresh', mockAuth, async (req, res) => {
-    try {
-        if (!currentSock || !isWABiz(currentSock)) {
-            return res.json({ success: false, error: 'Fitur ini hanya untuk WhatsApp Business' });
-        }
-        // Clear cache dan ambil ulang
-        quickRepliesCache.data = null;
-        quickRepliesCache.timestamp = 0;
-        const quickReplies = await getWAQuickReplies(currentSock);
-        res.json({ success: true, quickReplies: quickReplies || [], message: 'Quick replies diperbarui' });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
 });
 
 // Alerts
@@ -838,44 +637,6 @@ app.post('/api/models', mockAuth, async (req, res) => {
         res.json({ success: true, models });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Gagal mengambil model. Periksa API Key Anda.' });
-    }
-});
-
-// Chat endpoint untuk mengirim pesan WhatsApp
-app.post('/api/chat', mockAuth, async (req, res) => {
-    try {
-        const { to, message } = req.body;
-        
-        if (!to || !message) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Parameter "to" dan "message" wajib diisi' 
-            });
-        }
-
-        if (!currentSock) {
-            return res.status(503).json({ 
-                success: false, 
-                error: 'Bot belum terhubung ke WhatsApp' 
-            });
-        }
-
-        // Pastikan nomor dalam format yang valid untuk JID
-        const jid = to.endsWith('@s.whatsapp.net') ? to : `${to}@s.whatsapp.net`;
-        
-        const result = await currentSock.sendMessage(jid, { text: message });
-        
-        res.json({ 
-            success: true, 
-            status: 'sent', 
-            messageId: result.key.id 
-        });
-    } catch (err) {
-        logger.error('[API Chat] Error:', err);
-        res.status(500).json({ 
-            success: false, 
-            error: err.message || 'Terjadi kesalahan saat mengirim pesan' 
-        });
     }
 });
 
