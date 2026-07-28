@@ -5,6 +5,7 @@ require('dotenv').config();
 const express = require('express');
 const path    = require('path');
 const axios   = require('axios');
+const net     = require('net');
 const db      = require('./database');
 
 const app  = express();
@@ -177,13 +178,60 @@ app.post('/api/models', mockAuth, async (req, res) => {
 //   2. SYNC PRODUCTS — tarik data dari Google Sheets → simpan ke local DB
 //   3. SYNC ORDERS  — (opsional) kirim data pesanan ke Google Sheets
 
+function isPrivateOrLocalIp(hostname) {
+    if (!net.isIP(hostname)) return false;
+    if (net.isIPv4(hostname)) {
+        const parts = hostname.split('.').map(Number);
+        const [a, b] = parts;
+        if (a === 10) return true;
+        if (a === 127) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        return false;
+    }
+    const normalized = hostname.toLowerCase();
+    return normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:');
+}
+
+function buildValidatedGasUrl(rawUrl, action) {
+    let u;
+    try {
+        u = new URL(String(rawUrl).trim());
+    } catch (_) {
+        throw new Error('Format GAS URL tidak valid.');
+    }
+
+    if (u.protocol !== 'https:') {
+        throw new Error('GAS URL harus menggunakan HTTPS.');
+    }
+    if (u.username || u.password) {
+        throw new Error('GAS URL tidak boleh mengandung kredensial.');
+    }
+    if (u.port) {
+        throw new Error('GAS URL tidak boleh menggunakan port kustom.');
+    }
+
+    const host = u.hostname.toLowerCase();
+    if (host !== 'script.google.com') {
+        throw new Error('Host GAS URL tidak diizinkan.');
+    }
+    if (isPrivateOrLocalIp(host)) {
+        throw new Error('Host GAS URL tidak valid.');
+    }
+
+    u.searchParams.set('action', action);
+    return u.toString();
+}
+
 // Test koneksi ke GAS Web App
 app.post('/api/gas/test', mockAuth, async (req, res) => {
     const { gas_url } = req.body;
     if (!gas_url) return res.json({ success: false, error: 'GAS URL kosong.' });
 
     try {
-        const r = await axios.get(`${gas_url}?action=ping`, { timeout: 8000 });
+        const safeGasUrl = buildValidatedGasUrl(gas_url, 'ping');
+        const r = await axios.get(safeGasUrl, { timeout: 8000 });
         if (r.data?.status === 'ok') {
             res.json({ success: true, message: `Terhubung ke GAS. Spreadsheet: "${r.data.sheet_name || 'N/A'}"` });
         } else {
